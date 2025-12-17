@@ -230,22 +230,114 @@ def save_manga_metadata(manga_dir: Path, manga: dict) -> None:
     print(f"📄 Metadata saved to: {metadata_file}")
 
 
-def download_chapter_images(chapter_id: str, manga_title: str, chapter_number: str, manga: dict) -> bool:
+def get_chapter_pages(chapter_id: str) -> dict | None:
     """
-    Download all images for a chapter.
-    Saves to: downloads/{author_name}/{manga_title}/chapter_{number}/
-    Also creates metadata.json in the manga folder.
+    Get page information for a chapter.
+    Returns server data with base_url, hash, and page list.
     """
     resp = requests.get(PAGE_URL + chapter_id, headers=HEADERS)
     server_data = resp.json()
     
     if server_data.get("result") == "error":
         print(f"Error: Could not get chapter data")
+        return None
+    
+    return {
+        "base_url": server_data["baseUrl"],
+        "hash": server_data["chapter"]["hash"],
+        "pages": server_data["chapter"]["data"],
+        "total": len(server_data["chapter"]["data"])
+    }
+
+
+def select_pages_to_download(total_pages: int) -> list[int] | None:
+    """
+    Prompt user to select which pages to download.
+    Returns list of page numbers (1-indexed) or None if cancelled.
+    """
+    print(f"\n📖 This chapter has {total_pages} pages.")
+    print("\n[Download Options]")
+    print("  1. Download random 5 pages")
+    print("  2. Select specific page(s)")
+    print("  0. Cancel")
+    
+    choice = input("\nSelect option: ").strip()
+    
+    if choice == "0":
+        return None
+    elif choice == "1":
+        # Random 5 pages
+        num_to_download = min(5, total_pages)
+        selected = sorted(random.sample(range(1, total_pages + 1), num_to_download))
+        print(f"   Selected random pages: {selected}")
+        return selected
+    elif choice == "2":
+        # Specific pages
+        print(f"\nEnter page number(s) between 1 and {total_pages}")
+        print("  Examples: '5' for single page, '1,3,7' for multiple, '1-5' for range")
+        
+        page_input = input("\nPage(s): ").strip()
+        
+        if not page_input:
+            return None
+        
+        selected = set()
+        try:
+            # Parse input - handle comma-separated and ranges
+            for part in page_input.split(","):
+                part = part.strip()
+                if "-" in part:
+                    # Range like "1-5"
+                    start, end = part.split("-", 1)
+                    start, end = int(start.strip()), int(end.strip())
+                    if start > end:
+                        start, end = end, start
+                    for p in range(start, end + 1):
+                        if 1 <= p <= total_pages:
+                            selected.add(p)
+                else:
+                    # Single page
+                    p = int(part)
+                    if 1 <= p <= total_pages:
+                        selected.add(p)
+            
+            if not selected:
+                print("No valid pages selected.")
+                return None
+            
+            selected = sorted(selected)
+            print(f"   Selected pages: {selected}")
+            return selected
+            
+        except ValueError:
+            print("Invalid input. Please enter valid page numbers.")
+            return None
+    else:
+        print("Invalid option.")
+        return None
+
+
+def download_chapter_images(chapter_id: str, manga_title: str, chapter_number: str, manga: dict) -> bool:
+    """
+    Download selected images for a chapter.
+    Saves to: downloads/{author_name}/{manga_title}/chapter_{number}/
+    Also creates metadata.json in the manga folder.
+    """
+    # Get chapter page data
+    chapter_data = get_chapter_pages(chapter_id)
+    if not chapter_data:
         return False
     
-    base_url = server_data["baseUrl"]
-    chapter_hash = server_data["chapter"]["hash"]
-    pages = server_data["chapter"]["data"]
+    base_url = chapter_data["base_url"]
+    chapter_hash = chapter_data["hash"]
+    pages = chapter_data["pages"]
+    total_pages = chapter_data["total"]
+    
+    # Let user select pages to download
+    selected_page_nums = select_pages_to_download(total_pages)
+    if not selected_page_nums:
+        print("Download cancelled.")
+        return False
     
     # Create download directory with author/manga structure
     author_name = manga.get("author", "Unknown")
@@ -265,12 +357,11 @@ def download_chapter_images(chapter_id: str, manga_title: str, chapter_number: s
     # Save metadata to manga folder (creates/updates metadata.json)
     save_manga_metadata(manga_dir, manga)
     
-    # Select 5 random pages (or all if fewer than 5)
-    num_to_download = min(5, len(pages))
-    selected_indices = sorted(random.sample(range(len(pages)), num_to_download))
-    selected_pages = [(idx + 1, pages[idx]) for idx in selected_indices]
+    # Build list of pages to download: (page_num, page_filename)
+    selected_pages = [(num, pages[num - 1]) for num in selected_page_nums]
+    num_to_download = len(selected_pages)
     
-    print(f"Downloading {num_to_download} random pages (out of {len(pages)}) to: {chapter_dir}")
+    print(f"Downloading {num_to_download} page(s) to: {chapter_dir}")
     
     for count, (page_num, page) in enumerate(selected_pages, 1):
         image_url = f"{base_url}/data/{chapter_hash}/{page}"
@@ -291,7 +382,7 @@ def download_chapter_images(chapter_id: str, manga_title: str, chapter_number: s
         except Exception as e:
             print(f"\n  Error downloading page {page_num}: {e}")
     
-    print(f"\n✓ Downloaded {num_to_download} random pages successfully!")
+    print(f"\n✓ Downloaded {num_to_download} page(s) successfully!")
     return True
 
 
