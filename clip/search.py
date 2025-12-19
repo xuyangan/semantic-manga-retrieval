@@ -73,7 +73,9 @@ def visualize_results(
         
         # Title with similarity and metadata
         sim_pct = r['similarity'] * 100
-        title = f"#{r['rank']} ({sim_pct:.1f}%)\n{r['manga'][:20]}\nCh.{r['chapter_num']} Pg.{r['page_num']}"
+        author = r['author'][:15] + '...' if len(r['author']) > 15 else r['author']
+        manga = r['manga'][:20] + '...' if len(r['manga']) > 20 else r['manga']
+        title = f"#{r['rank']} ({sim_pct:.1f}%)\n{author}\n{manga}\nCh.{r['chapter_num']} Pg.{r['page_num']}"
         
         # Color based on similarity
         if sim_pct >= 80:
