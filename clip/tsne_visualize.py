@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
 """
-t-SNE Visualization for FAISS Index
+Evaluate embedding quality by measuring how well similar content clusters together.
 
-Visualize the embedding space of indexed manga panels using t-SNE.
-
-Usage:
-    python clip/tsne_visualize.py --index-dir datasets/small/faiss_index
-    python clip/tsne_visualize.py --index-dir datasets/small/faiss_index --color-by author
-    python clip/tsne_visualize.py --index-dir datasets/small/faiss_index --with-thumbnails
+This computes silhouette scores using author/manga as labels and visualizes with t-SNE.
 """
 
 import os
@@ -15,10 +10,10 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import argparse
 from pathlib import Path
-
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
+from sklearn.metrics import silhouette_score, silhouette_samples, davies_bouldin_score
 
 
 def load_embeddings_from_index(index_dir: Path) -> tuple[np.ndarray, list[dict]]:
@@ -64,7 +59,6 @@ def compute_tsne(
     Returns:
         (N, 2) array of 2D coordinates
     """
-    # Adjust perplexity if needed
     perplexity = min(perplexity, len(embeddings) - 1)
     
     print(f"Computing t-SNE (perplexity={perplexity}, n_iter={n_iter})...")
@@ -82,20 +76,162 @@ def compute_tsne(
     return coords
 
 
-def plot_tsne(
+def create_labels(metadata: list[dict], label_type: str) -> tuple[np.ndarray, dict]:
+    """
+    Create numeric labels from metadata.
+    
+    Args:
+        metadata: List of metadata dicts
+        label_type: 'author' or 'manga'
+    
+    Returns:
+        tuple: (label array, id_to_name dict)
+    """
+    if label_type == "author":
+        categories = [m["author"] for m in metadata]
+    elif label_type == "manga":
+        categories = [m["manga"] for m in metadata]
+    else:
+        raise ValueError(f"Invalid label_type: {label_type}")
+    
+    unique_categories = sorted(set(categories))
+    category_to_id = {cat: i for i, cat in enumerate(unique_categories)}
+    
+    labels = np.array([category_to_id[cat] for cat in categories])
+    id_to_category = {i: cat for cat, i in category_to_id.items()}
+    
+    return labels, id_to_category
+
+
+def evaluate_embedding_quality(embeddings: np.ndarray, metadata: list[dict]):
+    """
+    Evaluate how well embeddings separate content by author and manga.
+    
+    Args:
+        embeddings: (N, D) embedding array
+        metadata: List of metadata dicts
+    """
+    print("\n" + "="*80)
+    print("EMBEDDING QUALITY EVALUATION")
+    print("="*80)
+    
+    results = {}
+    
+    # Evaluate by author
+    print("\n--- Grouping by AUTHOR (Art Style) ---")
+    author_labels, author_names = create_labels(metadata, "author")
+    
+    n_authors = len(set(author_labels))
+    print(f"Number of unique authors: {n_authors}")
+    
+    if n_authors > 1:
+        author_silhouette = silhouette_score(embeddings, author_labels)
+        author_db = davies_bouldin_score(embeddings, author_labels)
+        
+        print(f"\nSilhouette Score (author): {author_silhouette:.4f}")
+        print(f"  → Higher is better (range: -1 to 1)")
+        print(f"  → Measures: Do panels from same author cluster together?")
+        
+        print(f"\nDavies-Bouldin Index (author): {author_db:.4f}")
+        print(f"  → Lower is better")
+        print(f"  → Measures: How well-separated are different authors?")
+        
+        if author_silhouette > 0.5:
+            print("\n✓ Excellent: Embeddings strongly capture art style differences")
+        elif author_silhouette > 0.3:
+            print("\n✓ Good: Embeddings moderately capture art style")
+        elif author_silhouette > 0.2:
+            print("\n~ Fair: Embeddings weakly capture art style")
+        else:
+            print("\n✗ Poor: Embeddings don't separate by art style")
+        
+        results['author_silhouette'] = author_silhouette
+        results['author_db'] = author_db
+    else:
+        print("Only one author in dataset - cannot compute separation metrics")
+        results['author_silhouette'] = None
+        results['author_db'] = None
+    
+    # Evaluate by manga
+    print("\n--- Grouping by MANGA (Story/Characters) ---")
+    manga_labels, manga_names = create_labels(metadata, "manga")
+    
+    n_mangas = len(set(manga_labels))
+    print(f"Number of unique manga: {n_mangas}")
+    
+    if n_mangas > 1:
+        manga_silhouette = silhouette_score(embeddings, manga_labels)
+        manga_db = davies_bouldin_score(embeddings, manga_labels)
+        
+        print(f"\nSilhouette Score (manga): {manga_silhouette:.4f}")
+        print(f"  → Higher is better (range: -1 to 1)")
+        print(f"  → Measures: Do panels from same manga cluster together?")
+        
+        print(f"\nDavies-Bouldin Index (manga): {manga_db:.4f}")
+        print(f"  → Lower is better")
+        print(f"  → Measures: How well-separated are different manga?")
+        
+        if manga_silhouette > 0.5:
+            print("\n✓ Excellent: Embeddings strongly capture manga-specific features")
+        elif manga_silhouette > 0.3:
+            print("\n✓ Good: Embeddings moderately capture manga-specific features")
+        elif manga_silhouette > 0.2:
+            print("\n~ Fair: Embeddings weakly capture manga-specific features")
+        else:
+            print("\n✗ Poor: Embeddings don't separate by manga")
+        
+        results['manga_silhouette'] = manga_silhouette
+        results['manga_db'] = manga_db
+    else:
+        print("Only one manga in dataset - cannot compute separation metrics")
+        results['manga_silhouette'] = None
+        results['manga_db'] = None
+    
+    # Comparison
+    if n_authors > 1 and n_mangas > 1:
+        print("\n" + "="*80)
+        print("COMPARISON")
+        print("="*80)
+        
+        if author_silhouette > manga_silhouette + 0.1:
+            print(f"\nEmbeddings primarily capture ART STYLE (author)")
+            print(f"  Author silhouette ({author_silhouette:.3f}) >> Manga silhouette ({manga_silhouette:.3f})")
+            print(f"  → Good for: Finding panels with similar artistic characteristics")
+        elif manga_silhouette > author_silhouette + 0.1:
+            print(f"\nEmbeddings primarily capture STORY/CHARACTERS (manga)")
+            print(f"  Manga silhouette ({manga_silhouette:.3f}) >> Author silhouette ({author_silhouette:.3f})")
+            print(f"  → Good for: Finding panels from same series")
+        else:
+            print(f"\nEmbeddings capture BOTH art style and story")
+            print(f"  Author silhouette: {author_silhouette:.3f}")
+            print(f"  Manga silhouette: {manga_silhouette:.3f}")
+            print(f"  → Balanced representation")
+    
+    print("\n" + "="*80)
+    
+    results['n_authors'] = n_authors
+    results['n_mangas'] = n_mangas
+    
+    return results
+
+
+def plot_tsne_with_metrics(
     coords: np.ndarray,
     metadata: list[dict],
+    embeddings: np.ndarray,
     color_by: str = "author",
-    title: str = "t-SNE Visualization of Manga Embeddings",
+    title: str = "t-SNE Visualization with Silhouette Scores",
     figsize: tuple = (14, 10),
     output_path: Path | None = None,
 ) -> None:
     """
-    Plot t-SNE visualization with color coding.
+    Plot t-SNE visualization with color coding and silhouette metrics.
+    Same format as original but with metrics added to title.
     
     Args:
         coords: (N, 2) t-SNE coordinates
         metadata: List of metadata dicts
+        embeddings: Original high-dimensional embeddings
         color_by: 'author' or 'manga'
         title: Plot title
         figsize: Figure size
@@ -112,6 +248,13 @@ def plot_tsne(
     unique_cats = sorted(set(categories))
     n_cats = len(unique_cats)
     
+    # Compute silhouette score for this grouping
+    labels, _ = create_labels(metadata, color_by)
+    if n_cats > 1:
+        silhouette = silhouette_score(embeddings, labels)
+    else:
+        silhouette = None
+    
     # Color map
     cmap = plt.colormaps.get_cmap("tab20" if n_cats <= 20 else "hsv")
     colors = {cat: cmap(i / n_cats) for i, cat in enumerate(unique_cats)}
@@ -125,14 +268,20 @@ def plot_tsne(
             cat_coords[:, 0],
             cat_coords[:, 1],
             c=[colors[cat]],
-            label=cat[:30],  # Truncate long names
+            label=cat[:30],
             s=100,
             alpha=0.7,
             edgecolors='white',
             linewidths=0.5,
         )
     
-    ax.set_title(title, fontsize=14, fontweight='bold')
+    # Add silhouette score to title
+    if silhouette is not None:
+        title_with_score = f"{title}\nSilhouette Score ({color_by}): {silhouette:.4f}"
+    else:
+        title_with_score = title
+    
+    ax.set_title(title_with_score, fontsize=14, fontweight='bold')
     ax.set_xlabel("t-SNE 1")
     ax.set_ylabel("t-SNE 2")
     
@@ -158,16 +307,19 @@ def plot_tsne(
 def plot_tsne_with_thumbnails(
     coords: np.ndarray,
     metadata: list[dict],
+    embeddings: np.ndarray,
     thumbnail_size: int = 40,
     figsize: tuple = (20, 16),
     output_path: Path | None = None,
 ) -> None:
     """
-    Plot t-SNE visualization with image thumbnails.
+    Plot t-SNE visualization with image thumbnails and metrics.
+    Same format as original but with metrics added to title.
     
     Args:
         coords: (N, 2) t-SNE coordinates
         metadata: List of metadata dicts
+        embeddings: Original high-dimensional embeddings
         thumbnail_size: Size of thumbnails in pixels
         figsize: Figure size
         output_path: Optional path to save figure
@@ -182,6 +334,13 @@ def plot_tsne_with_thumbnails(
     unique_authors = sorted(set(authors))
     cmap = plt.colormaps.get_cmap("tab10")
     author_colors = {a: cmap(i % 10) for i, a in enumerate(unique_authors)}
+    
+    # Compute silhouette scores
+    author_labels, _ = create_labels(metadata, "author")
+    manga_labels, _ = create_labels(metadata, "manga")
+    
+    author_sil = silhouette_score(embeddings, author_labels) if len(set(author_labels)) > 1 else None
+    manga_sil = silhouette_score(embeddings, manga_labels) if len(set(manga_labels)) > 1 else None
     
     # Plot background points
     for author in unique_authors:
@@ -217,7 +376,14 @@ def plot_tsne_with_thumbnails(
         except Exception as e:
             print(f"Error loading {meta['path']}: {e}")
     
-    ax.set_title("t-SNE with Thumbnails", fontsize=14, fontweight='bold')
+    # Title with metrics
+    title_parts = ["t-SNE with Thumbnails"]
+    if author_sil is not None:
+        title_parts.append(f"Silhouette (author): {author_sil:.4f}")
+    if manga_sil is not None:
+        title_parts.append(f"Silhouette (manga): {manga_sil:.4f}")
+    
+    ax.set_title("\n".join(title_parts), fontsize=14, fontweight='bold')
     ax.legend(loc='upper left', fontsize=8, title="Author")
     
     plt.tight_layout()
@@ -231,141 +397,16 @@ def plot_tsne_with_thumbnails(
     plt.close()
 
 
-def plot_interactive_html(
-    coords: np.ndarray,
-    metadata: list[dict],
-    output_path: Path,
-) -> None:
-    """
-    Create an interactive HTML visualization.
-    
-    Args:
-        coords: (N, 2) t-SNE coordinates
-        metadata: List of metadata dicts
-        output_path: Path to save HTML file
-    """
-    # Normalize coords to 0-100 range for CSS positioning
-    x_min, x_max = coords[:, 0].min(), coords[:, 0].max()
-    y_min, y_max = coords[:, 1].min(), coords[:, 1].max()
-    
-    x_norm = (coords[:, 0] - x_min) / (x_max - x_min) * 90 + 5
-    y_norm = (coords[:, 1] - y_min) / (y_max - y_min) * 90 + 5
-    
-    # Generate colors by author
-    authors = sorted(set(m["author"] for m in metadata))
-    colors = [
-        f"hsl({int(i * 360 / len(authors))}, 70%, 50%)"
-        for i in range(len(authors))
-    ]
-    author_colors = dict(zip(authors, colors))
-    
-    # Build HTML
-    html = """<!DOCTYPE html>
-<html>
-<head>
-    <title>t-SNE Visualization</title>
-    <style>
-        body {{ margin: 0; padding: 20px; background: #1a1a1a; font-family: Arial; }}
-        h1 {{ color: white; text-align: center; }}
-        .container {{ position: relative; width: 100%; height: 90vh; background: #2a2a2a; border-radius: 10px; }}
-        .point {{
-            position: absolute;
-            width: 60px;
-            height: 80px;
-            transform: translate(-50%, -50%);
-            cursor: pointer;
-            transition: transform 0.2s, z-index 0s;
-        }}
-        .point:hover {{
-            transform: translate(-50%, -50%) scale(2);
-            z-index: 1000;
-        }}
-        .point img {{
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            border-radius: 4px;
-            border: 2px solid;
-        }}
-        .tooltip {{
-            display: none;
-            position: absolute;
-            bottom: 100%;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(0,0,0,0.9);
-            color: white;
-            padding: 5px 10px;
-            border-radius: 4px;
-            font-size: 11px;
-            white-space: nowrap;
-        }}
-        .point:hover .tooltip {{ display: block; }}
-        .legend {{
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: rgba(0,0,0,0.8);
-            padding: 15px;
-            border-radius: 8px;
-            color: white;
-            font-size: 12px;
-        }}
-        .legend-item {{ display: flex; align-items: center; margin: 5px 0; }}
-        .legend-dot {{ width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }}
-    </style>
-</head>
-<body>
-    <h1>t-SNE Embedding Visualization</h1>
-    <div class="container">
-        {points}
-    </div>
-    <div class="legend">
-        <strong>Authors</strong>
-        {legend}
-    </div>
-</body>
-</html>"""
-    
-    # Generate points
-    points_html = []
-    for i, meta in enumerate(metadata):
-        color = author_colors[meta["author"]]
-        point = f'''
-        <div class="point" style="left: {x_norm[i]:.1f}%; top: {y_norm[i]:.1f}%;">
-            <img src="file://{meta['path']}" style="border-color: {color};">
-            <div class="tooltip">{meta['author']}<br>{meta['manga']}<br>{meta['chapter']} / {meta['page']}</div>
-        </div>'''
-        points_html.append(point)
-    
-    # Generate legend
-    legend_html = []
-    for author, color in author_colors.items():
-        legend_html.append(
-            f'<div class="legend-item"><div class="legend-dot" style="background: {color};"></div>{author}</div>'
-        )
-    
-    html = html.format(
-        points="\n".join(points_html),
-        legend="\n".join(legend_html),
-    )
-    
-    with open(output_path, "w") as f:
-        f.write(html)
-    
-    print(f"Saved interactive visualization to: {output_path}")
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="t-SNE visualization of FAISS index",
+        description="Evaluate embedding quality and visualize with t-SNE",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python clip/tsne_visualize.py --index-dir datasets/small/faiss_index
-  python clip/tsne_visualize.py --index-dir datasets/small/faiss_index --color-by manga
-  python clip/tsne_visualize.py --index-dir datasets/small/faiss_index --with-thumbnails
-  python clip/tsne_visualize.py --index-dir datasets/small/faiss_index --html tsne.html
+  python evaluate_embeddings.py --index-dir datasets/small/faiss_index
+  python evaluate_embeddings.py --index-dir datasets/small/faiss_index --color-by author
+  python evaluate_embeddings.py --index-dir datasets/small/faiss_index --color-by manga
+  python evaluate_embeddings.py --index-dir datasets/small/faiss_index --with-thumbnails
         """
     )
     parser.add_argument(
@@ -385,12 +426,6 @@ Examples:
         "--with-thumbnails",
         action="store_true",
         help="Show image thumbnails instead of dots",
-    )
-    parser.add_argument(
-        "--html",
-        type=str,
-        default=None,
-        help="Generate interactive HTML visualization",
     )
     parser.add_argument(
         "--output", "-o",
@@ -420,6 +455,9 @@ Examples:
     embeddings, metadata = load_embeddings_from_index(index_dir)
     print(f"Loaded {len(embeddings)} embeddings of dimension {embeddings.shape[1]}")
     
+    # Evaluate embedding quality
+    metrics = evaluate_embedding_quality(embeddings, metadata)
+    
     # Compute t-SNE
     coords = compute_tsne(
         embeddings,
@@ -428,16 +466,14 @@ Examples:
     )
     
     # Generate visualizations
-    if args.html:
-        plot_interactive_html(coords, metadata, Path(args.html))
-    elif args.with_thumbnails:
+    if args.with_thumbnails:
         plot_tsne_with_thumbnails(
-            coords, metadata,
+            coords, metadata, embeddings,
             output_path=Path(args.output) if args.output else None,
         )
     else:
-        plot_tsne(
-            coords, metadata,
+        plot_tsne_with_metrics(
+            coords, metadata, embeddings,
             color_by=args.color_by,
             output_path=Path(args.output) if args.output else None,
         )
