@@ -1,0 +1,26 @@
+You are given a manga image containing one or more characters.
+
+For each unique character visible, produce a description using this schema:
+
+[gender]; [age range]; [build]; [height]; [hair: length, tone, style]; [eyes: shape, size]; [face: structure, features]; [clothing]; [overall presence]
+
+Field Guidelines:
+- gender: male/female/ambiguous
+- age range: child/teen/young adult/adult/elderly
+- build: slim/average/muscular/stocky/petite
+- height: short/average/tall (relative to others if shown)
+- hair: length (short/medium/long), tone (light/dark/black/white), style (straight/wavy/spiky/tied)
+- eyes: shape (round/narrow/sharp), size (large/medium/small)
+- face: structure (round/angular/oval), notable features (sharp chin, high cheekbones, etc.)
+- clothing: visible garments and style
+- overall presence: dominant visual impression
+
+Constraints:
+- EXACTLY 72 tokens per character schema (critical for CLIP embedding)
+- Describe ONLY visible physical attributes
+- NO emotions, expressions, poses, or actions
+- NO inferred or external information
+- For grayscale manga: describe tones (light/dark) not colors
+- If gender is ambiguous, state "ambiguous (appears male/female)"
+
+Output format: One schema per line, no additional text.
