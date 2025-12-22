@@ -15,7 +15,7 @@ HEADERS = {
 }
 
 # Download directory
-DOWNLOAD_DIR = Path("./downloads")
+DOWNLOAD_DIR = Path("./final_dataset")
 
 
 def search_manga(query: str, search_by: str = "title", limit: int = 10) -> list:
