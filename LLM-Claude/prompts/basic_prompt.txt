@@ -1,26 +1,22 @@
-You are given a manga image containing one or more characters.
+Describe each visible unique character in the manga image as a concise, comma-separated list of visual attributes only.
 
-For each unique character visible, produce a description using this schema:
+Output format: Start immediately with descriptions. One line per character. Separate multiple characters with a blank line. No preamble, headers, or explanations.
 
-[gender]; [age range]; [build]; [height]; [hair: length, tone, style]; [eyes: shape, size]; [face: structure, features]; [clothing]; [overall presence]
+Length: 60–70 tokens per character (roughly 12-15 descriptive phrases)
 
-Field Guidelines:
-- gender: male/female/ambiguous
-- age range: child/teen/young adult/adult/elderly
-- build: slim/average/muscular/stocky/petite
-- height: short/average/tall (relative to others if shown)
-- hair: length (short/medium/long), tone (light/dark/black/white), style (straight/wavy/spiky/tied)
-- eyes: shape (round/narrow/sharp), size (large/medium/small)
-- face: structure (round/angular/oval), notable features (sharp chin, high cheekbones, etc.)
-- clothing: visible garments and style
-- overall presence: dominant visual impression
+Required elements in order: gender → age range → build → hair (length, tone, style) → facial structure → clothing → overall visual impression (purely visual)
 
-Constraints:
-- EXACTLY 72 tokens per character schema (critical for CLIP embedding)
-- Describe ONLY visible physical attributes
-- NO emotions, expressions, poses, or actions
-- NO inferred or external information
-- For grayscale manga: describe tones (light/dark) not colors
-- If gender is ambiguous, state "ambiguous (appears male/female)"
+Rules:
+* Physical appearance only
+* No emotions, actions, poses, gaze, or personality traits
+* No inferred, symbolic, or narrative information
+* For grayscale manga: describe tones as "light" or "dark" only
+* If gender is unclear: use "ambiguous gender" or "androgynous"
 
-Output format: One schema per line, no additional text.
+Style:
+* Natural descriptive language
+* Comma-separated phrases
+* No metaphors or abstract concepts
+
+Example output:
+Male, young adult, athletic build, short spiky dark hair, angular face with sharp jawline, wearing dark high-collared jacket with structured silhouette, clean bold high-contrast visual appearance
