@@ -26,16 +26,26 @@ import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import argparse
+import json
+from collections import defaultdict
 from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
-from sklearn.metrics import silhouette_score, silhouette_samples, davies_bouldin_score, calinski_harabasz_score
-from sklearn.cluster import DBSCAN
-from sklearn.ensemble import IsolationForest
-import json
 from tqdm import tqdm
-from collections import defaultdict
+
+try:
+    from sklearn.manifold import TSNE
+    from sklearn.metrics import (
+        silhouette_score, silhouette_samples, 
+        davies_bouldin_score, calinski_harabasz_score
+    )
+    from sklearn.cluster import DBSCAN
+    from sklearn.ensemble import IsolationForest
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    print("Warning: sklearn not installed. Clustering features will be unavailable.")
 
 
 def load_embeddings_from_dataset(dataset_dir: Path):
@@ -881,6 +891,11 @@ Examples:
     )
     
     args = parser.parse_args()
+    
+    # Check sklearn availability
+    if not SKLEARN_AVAILABLE:
+        print("Error: sklearn is required for clustering. Install with: pip install scikit-learn")
+        return
     
     # Load embeddings
     dataset_dir = Path(args.input)

@@ -23,13 +23,20 @@ import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import argparse
-from pathlib import Path
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
-from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
 import json
 from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+try:
+    from sklearn.manifold import TSNE
+    from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    print("Warning: sklearn not installed. Clustering features will be unavailable.")
 
 
 def load_text_embeddings_and_descriptions(dataset_dir: Path):
@@ -121,31 +128,65 @@ def extract_gender_from_description(text: str) -> str:
     """
     Extract gender from character description.
     
+    Handles multiple description formats:
+    - Old format: "gender; age; hair; ..." (semicolon-separated)
+    - New format: "gender, age_range, hair_color, ..." (comma-separated)
+    - Keyword detection in any format
+    
     Args:
         text: Character description text
     
     Returns:
-        Gender: 'male', 'female', or 'ambiguous'
+        Gender: 'male', 'female', 'ambiguous', or 'unknown'
     """
     if not text:
         return 'unknown'
     
-    # Gender is the first field in the schema
-    text_lower = text.lower()
+    text_lower = text.lower().strip()
     
     # Check for ambiguous first (as it may contain male/female keywords)
     if 'ambiguous' in text_lower:
         return 'ambiguous'
     
-    # Split by semicolon and check first field
-    parts = text.split(';')
-    if len(parts) > 0:
-        first_field = parts[0].strip().lower()
-        
+    # Try to get first field from the description
+    # Handle both semicolon (old format) and comma (new format) separators
+    first_field = None
+    
+    # First, try semicolon separator (old format)
+    if ';' in text:
+        first_field = text.split(';')[0].strip().lower()
+    # Then try comma separator (new format)
+    elif ',' in text:
+        first_field = text.split(',')[0].strip().lower()
+    else:
+        # No separator found, use the whole text
+        first_field = text_lower
+    
+    # Check the first field for gender keywords
+    if first_field:
+        # Check for 'female' first (since 'male' is a substring of 'female')
         if 'female' in first_field:
             return 'female'
-        elif 'male' in first_field and 'female' not in first_field:
+        elif 'male' in first_field:
             return 'male'
+    
+    # Fallback: look for gender keywords anywhere in the text
+    # This helps with malformed descriptions or different formats
+    
+    # Count gender-specific keywords
+    female_keywords = ['female', 'woman', 'girl', 'lady', 'she', 'her']
+    male_keywords = ['male', 'man', 'boy', 'guy', 'he', 'his']
+    
+    # Split into words for more accurate matching
+    words = text_lower.split()
+    
+    female_count = sum(1 for kw in female_keywords if kw in words)
+    male_count = sum(1 for kw in male_keywords if kw in words)
+    
+    if female_count > male_count:
+        return 'female'
+    elif male_count > female_count:
+        return 'male'
     
     return 'unknown'
 
@@ -540,6 +581,11 @@ Examples:
     )
     
     args = parser.parse_args()
+    
+    # Check sklearn availability
+    if not SKLEARN_AVAILABLE:
+        print("Error: sklearn is required for clustering. Install with: pip install scikit-learn")
+        return
     
     # Load embeddings and descriptions
     dataset_dir = Path(args.input)

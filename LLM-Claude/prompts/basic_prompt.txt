@@ -4,7 +4,7 @@ Output format: Start immediately with descriptions. One line per character. Sepa
 
 Length: 60–70 tokens per character (roughly 12-15 descriptive phrases)
 
-Required elements in order: gender → age range → build → hair (length, tone, style) → facial structure → clothing → overall visual impression (purely visual)
+Required elements in order: gender → age range → build → hair (length, tone, style) → facial structure → clothing (be generic) → overall visual impression (purely visual)
 
 Rules:
 * Physical appearance only

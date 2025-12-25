@@ -261,15 +261,15 @@ def fetch_author_works(author_id: str) -> tuple[str, list[dict]]:
 
 def search_manga_api(config: dict, retries: int = 2) -> list[dict]:
     """Execute a single manga search API call with retry logic."""
-    params = {
+        params = {
         "limit": 50,
-        "includes[]": ["author"],
-        "availableTranslatedLanguage[]": ["en"],
-        "hasAvailableChapters": "true",
-        "contentRating[]": ["safe", "suggestive"],
-        **config
-    }
-    
+            "includes[]": ["author"],
+            "availableTranslatedLanguage[]": ["en"],
+            "hasAvailableChapters": "true",
+            "contentRating[]": ["safe", "suggestive"],
+            **config
+        }
+        
     for attempt in range(retries + 1):
         try:
             resp = requests.get(MANGA_URL, params=params, headers=HEADERS, timeout=30)

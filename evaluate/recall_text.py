@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 """
-Recall Evaluation Script for Text-Based Queries
+Recall Evaluation Script for LLM-Generated Text Queries
 
-Evaluates recall@k for text queries using FAISS text index.
-Processes query folders with text.txt, query.png (for visualization), and labels.txt files.
+Evaluates recall@k and mAP@k using LLM-generated descriptions as text queries.
+Similar to the text part of late fusion - generates descriptions from images via LLM.
 
-Sample Execution:
-    python evaluate/recall_text.py --index index/text --queries a_queries/text --output results/recall_text
+Workflow:
+    1. For each query folder, check for cached LLM description (llm_description.txt)
+    2. If not cached, generate description from query image using LLM and cache it
+    3. Use the LLM description as text query for CLIP text embedding
+    4. Search FAISS text index with the embedding
+
+Usage:
+    python -m evaluate.recall_text --index final_dataset_text_embeddings/faiss_index \
+        --queries queries --output results/recall_text
 """
 
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Any
 import numpy as np
 from tqdm import tqdm
 from datetime import datetime
@@ -23,30 +29,37 @@ from PIL import Image
 import torch
 import open_clip
 
-try:
-    import faiss
-    FAISS_AVAILABLE = True
-except ImportError:
-    FAISS_AVAILABLE = False
-    print("Warning: faiss not installed. Install with: pip install faiss-cpu or faiss-gpu")
-
-# Import utility functions
+# Import utility functions (handles sys.path setup)
 from evaluate.recall_utils import (
     get_device,
+    check_faiss_available,
     load_faiss_index,
     search_faiss_index,
     load_ground_truth_labels,
-    normalize_path_for_matching,
-    extract_manga_chapter_page,
     match_result_to_ground_truth,
     compute_recall_at_k,
+    compute_map_at_k,
     compute_average_metrics,
     plot_recall_curve,
     plot_aggregate_recall_curves,
     add_border_to_image,
     create_summary_table,
     load_text_query,
+    load_llm_description,
+    save_llm_description,
+    find_query_image,
+    get_page_key_from_result,
+    FAISS_AVAILABLE,
 )
+
+# Import LLM encoder for description generation
+from late_fusion.llm_encoder import encode_query_llm
+
+# Import faiss for type hints
+try:
+    import faiss
+except ImportError:
+    faiss = None
 
 
 def load_clip_model(model_name: str = "ViT-L-14", pretrained: str = "laion2b_s32b_b82k", device: str = None):
@@ -64,38 +77,39 @@ def load_clip_model(model_name: str = "ViT-L-14", pretrained: str = "laion2b_s32
     if device is None:
         device = get_device()
     
-    model, _, _ = open_clip.create_model_and_transforms(
-        model_name, pretrained=pretrained
-    )
-    tokenizer = open_clip.get_tokenizer(model_name)
-    model = model.to(device)
-    model.eval()
-    
-    print(f"Loaded CLIP model: {model_name} ({pretrained}) on {device}")
-    return model, tokenizer, device
+    try:
+        model, _, _ = open_clip.create_model_and_transforms(
+            model_name, pretrained=pretrained
+        )
+        tokenizer = open_clip.get_tokenizer(model_name)
+        model = model.to(device)
+        model.eval()
+        
+        # Test the model with a dummy operation
+        with torch.no_grad():
+            dummy_tokens = tokenizer(["test"]).to(device)
+            _ = model.encode_text(dummy_tokens)
+        
+        print(f"Loaded CLIP model: {model_name} ({pretrained}) on {device}")
+        return model, tokenizer, device
+        
+    except Exception as e:
+        if device != "cpu":
+            print(f"Error loading CLIP model on {device}: {e}")
+            print("Falling back to CPU...")
+            device = "cpu"
+            model, _, _ = open_clip.create_model_and_transforms(
+                model_name, pretrained=pretrained
+            )
+            tokenizer = open_clip.get_tokenizer(model_name)
+            model = model.to(device)
+            model.eval()
+            print(f"Loaded CLIP model: {model_name} ({pretrained}) on {device} (fallback)")
+            return model, tokenizer, device
+        else:
+            raise
 
 
-
-
-def get_page_key(meta: dict) -> str:
-    """
-    Extract unique page identifier from metadata.
-    Handles different metadata formats from text embeddings.
-    """
-    # Try source_file first (format: "manga/chapter_X/page_XXX.txt")
-    source = meta.get("source_file") or meta.get("path", "")
-    if source:
-        # Remove extension and return as key
-        return str(Path(source).with_suffix(""))
-    
-    # Fallback: construct from manga/chapter/page fields
-    manga = meta.get("manga", "")
-    chapter = meta.get("chapter", "")
-    page = meta.get("page", "")
-    if manga and chapter and page:
-        return f"{manga}/{chapter}/{page}".replace(".txt", "").replace(".png", "").replace(".jpg", "")
-    
-    return ""
 
 
 def deduplicate_by_page(results: List[Dict]) -> List[Dict]:
@@ -112,7 +126,7 @@ def deduplicate_by_page(results: List[Dict]) -> List[Dict]:
     seen_pages = {}
     
     for r in results:
-        page_key = get_page_key(r)
+        page_key = get_page_key_from_result(r)
         if not page_key:
             continue
         
@@ -156,46 +170,66 @@ def embed_text_query(model, tokenizer, device: str, query_text: str) -> np.ndarr
 
 def evaluate_single_query(
     query_folder: Path,
-    index: faiss.Index,
+    index: Any,  # faiss.Index
     id_to_meta: Dict[int, Dict],
     model,
     tokenizer,
     device: str,
-    k_values: List[int] = [1, 5, 10, 20],
+    k_values: List[int] = [5, 10, 20, 30, 40, 50],
+    map_k_values: List[int] = [5, 10, 20, 30, 40, 50],
     k_candidates: int = 100
 ) -> Dict:
     """
-    Evaluate recall for a single text query.
+    Evaluate recall for a single query using LLM-generated text description.
+    
+    Workflow:
+        1. Check for cached LLM description (llm_description.txt)
+        2. If not cached, generate description from query image using LLM
+        3. Cache the generated description for future runs
+        4. Use the LLM description as text query for CLIP embedding
+        5. Search FAISS text index with the embedding
     
     Args:
-        query_folder: Path to query folder (contains text.txt, query.png, labels.txt)
-        index: FAISS index
+        query_folder: Path to query folder (contains query image, labels.txt)
+        index: FAISS text index
         id_to_meta: Metadata mapping
         model: CLIP model
         tokenizer: CLIP tokenizer
         device: Device to use
         k_values: List of k values for recall@k
+        map_k_values: List of k values for mAP@k
         k_candidates: Number of candidates to retrieve before deduplication
     
     Returns:
         Dictionary with evaluation results
     """
-    # Load text query
-    query_text = load_text_query(query_folder)
+    # Find query image (needed for LLM description generation)
+    query_image = find_query_image(query_folder)
     
-    if not query_text:
-        return {
-            "query_folder": str(query_folder),
-            "error": "Text query not found (expected text.txt or text_query.txt)"
-        }
+    # Load user-provided text query (used as hint for LLM)
+    user_query = load_text_query(query_folder)
     
-    # Find query image (for visualization)
-    query_image = None
-    for ext in ['.png', '.jpg', '.jpeg', '.webp']:
-        candidate = query_folder / f"query{ext}"
-        if candidate.exists():
-            query_image = candidate
-            break
+    # Try to load cached LLM description, or generate if not exists
+    query_text = load_llm_description(query_folder)
+    
+    if query_text is None:
+        # No cached LLM description - generate one
+        if query_image is None:
+            return {
+                "query_folder": str(query_folder),
+                "error": "No query image found for LLM description generation"
+            }
+        
+        try:
+            # Generate LLM description from the image
+            query_text = encode_query_llm(query_image, user_query if user_query else "", verbose=False)
+            # Cache the generated description
+            save_llm_description(query_folder, query_text)
+        except Exception as e:
+            return {
+                "query_folder": str(query_folder),
+                "error": f"Error generating LLM description: {e}"
+            }
     
     # Load ground truth
     labels_file = query_folder / "labels.txt"
@@ -253,6 +287,12 @@ def evaluate_single_query(
         metric_name = f"recall@{k}"
         recall_metrics[metric_name] = compute_recall_at_k(search_results, ground_truth, k, include_page_key=True, include_source_file=True)
     
+    # Compute mAP@k for each k value
+    map_metrics = {}
+    for k in map_k_values:
+        metric_name = f"map@{k}"
+        map_metrics[metric_name] = compute_map_at_k(search_results, ground_truth, k, include_page_key=True, include_source_file=True)
+    
     # Get all relevant retrieved results
     all_relevant = []
     for result in search_results:
@@ -268,6 +308,7 @@ def evaluate_single_query(
         "total_retrieved": len(search_results),
         "relevant_retrieved": len(all_relevant),
         "recall_metrics": recall_metrics,
+        "map_metrics": map_metrics,
         "all_retrieved": search_results,
         "relevant_results": all_relevant
     }
@@ -278,7 +319,7 @@ def evaluate_single_query(
 def find_image_path(meta: dict, image_dir: Path) -> Path:
     """Find corresponding image file for a text result."""
     # Get page key
-    page_key = get_page_key(meta)
+    page_key = get_page_key_from_result(meta)
     if not page_key:
         return None
     
@@ -339,7 +380,7 @@ def visualize_query_results(
     # Determine relevant paths for highlighting
     relevant_paths = set()
     for r in result.get('relevant_results', []):
-        page_key = r.get('page_key', get_page_key(r))
+        page_key = r.get('page_key', get_page_key_from_result(r))
         if page_key:
             relevant_paths.add(page_key)
     
@@ -349,7 +390,7 @@ def visualize_query_results(
         
         # Find and display image
         img_loaded = False
-        page_key = r.get('page_key', get_page_key(r))
+        page_key = r.get('page_key', get_page_key_from_result(r))
         
         if image_dir:
             img_path = find_image_path(r, image_dir)
@@ -398,10 +439,10 @@ def visualize_query_results(
         ax.set_title(title, fontsize=9, color=color)
         ax.axis('off')
     
-    # Main title with query text
+    # Main title with LLM-generated description
     query_name = Path(result['query_folder']).name
     query_text = result.get('query_text', '')[:60]
-    plt.suptitle(f"Text Query: \"{query_text}...\"\n({query_name})", fontsize=12, fontweight='bold')
+    plt.suptitle(f"LLM Description: \"{query_text}...\"\n({query_name})", fontsize=12, fontweight='bold')
     plt.tight_layout()
     
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -450,8 +491,15 @@ Examples:
         "--k-values",
         type=int,
         nargs='+',
-        default=[1, 5, 10, 20],
-        help="K values for recall@k evaluation (default: 1 5 10 20)",
+        default=[5, 10, 20, 30, 40, 50],
+        help="K values for recall@k evaluation (default: 5 10 20 30 40 50)",
+    )
+    parser.add_argument(
+        "--map-k-values",
+        type=int,
+        nargs='+',
+        default=[5, 10, 20, 30, 40, 50],
+        help="K values for mAP@k evaluation (default: 5 10 20 30 40 50)",
     )
     parser.add_argument(
         "--k-candidates",
@@ -521,7 +569,9 @@ Examples:
         return
     
     print(f"\nFound {len(query_folders)} query folders")
+    print(f"Using LLM-generated descriptions as text queries")
     print(f"Evaluating recall@k with k values: {args.k_values}")
+    print(f"Evaluating mAP@k with k values: {args.map_k_values}")
     print(f"Retrieving {args.k_candidates} candidates before deduplication")
     print("="*60)
     
@@ -538,6 +588,7 @@ Examples:
             tokenizer=tokenizer,
             device=device,
             k_values=args.k_values,
+            map_k_values=args.map_k_values,
             k_candidates=args.k_candidates
         )
         query_time = time.time() - start_time
@@ -566,6 +617,7 @@ Examples:
             "queries_dir": str(queries_dir),
             "image_dir": str(image_dir) if image_dir else None,
             "k_values": args.k_values,
+            "map_k_values": args.map_k_values,
             "k_candidates": args.k_candidates,
             "num_queries": len(query_folders),
             "model": args.model,
@@ -600,11 +652,11 @@ Examples:
             
             query_name = Path(result['query_folder']).name if 'query_folder' in result else f"query_{i+1}"
             curve_file = curves_dir / f"query_{i+1:03d}_{query_name}_recall_curve.png"
-            plot_recall_curve(result, curve_file, color='green', title_prefix="Text Query")
+            plot_recall_curve(result, curve_file, color='green', title_prefix="LLM Text Query")
         
         # Aggregate curve
         aggregate_file = curves_dir / "aggregate_all_queries.png"
-        plot_aggregate_recall_curves(all_results, averages, aggregate_file, color='green', title="All Text Queries")
+        plot_aggregate_recall_curves(all_results, averages, aggregate_file, color='green', title="LLM Text Queries")
         print(f"Recall curves saved to: {curves_dir}")
         
         # Create image visualizations (if image_dir provided)
@@ -645,9 +697,21 @@ Examples:
         print(f"{'Metric':<15} {'Mean':<10} {'Std':<10} {'Min':<10} {'Max':<10} {'Median':<10}")
         print("-" * 70)
         
+        # Print recall metrics
         for metric_name, stats in sorted(averages['average_metrics'].items()):
-            print(f"{metric_name:<15} {stats['mean']:<10.4f} {stats['std']:<10.4f} "
-                  f"{stats['min']:<10.4f} {stats['max']:<10.4f} {stats['median']:<10.4f}")
+            if metric_name.startswith('recall@'):
+                print(f"{metric_name:<15} {stats['mean']:<10.4f} {stats['std']:<10.4f} "
+                      f"{stats['min']:<10.4f} {stats['max']:<10.4f} {stats['median']:<10.4f}")
+        
+        # Print mAP metrics
+        print("\nAverage mAP@K Metrics:")
+        print(f"{'Metric':<15} {'Mean':<10} {'Std':<10} {'Min':<10} {'Max':<10} {'Median':<10}")
+        print("-" * 70)
+        
+        for metric_name, stats in sorted(averages['average_metrics'].items()):
+            if metric_name.startswith('map@'):
+                print(f"{metric_name:<15} {stats['mean']:<10.4f} {stats['std']:<10.4f} "
+                      f"{stats['min']:<10.4f} {stats['max']:<10.4f} {stats['median']:<10.4f}")
         
         print("\nOverall Statistics:")
         overall = averages['overall_stats']

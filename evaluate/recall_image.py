@@ -5,16 +5,15 @@ Recall Evaluation Script for Image-Based Queries
 Evaluates recall@k for query images using FAISS index.
 Processes query folders with query images and labels.txt files.
 
-Sample Execution:
-    python evaluate/recall_image.py --index index/image --queries query/image --output results/recall_image
+Usage:
+    python -m evaluate.recall_image --index index/image --queries query/image --output results/recall_image
 """
 
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Any
 import numpy as np
 from tqdm import tqdm
 from datetime import datetime
@@ -23,35 +22,24 @@ from PIL import Image
 import torch
 import open_clip
 
-try:
-    import faiss
-    FAISS_AVAILABLE = True
-except ImportError:
-    FAISS_AVAILABLE = False
-    print("Warning: faiss not installed. Install with: pip install faiss-cpu or faiss-gpu")
-
-# Add project root to path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
-
-# Import utility functions
+# Import utility functions (handles sys.path setup)
 from evaluate.recall_utils import (
     get_device,
+    check_faiss_available,
     load_faiss_index,
     search_faiss_index,
     load_ground_truth_labels,
-    normalize_path_for_matching,
-    extract_manga_chapter_page,
     match_result_to_ground_truth,
     compute_recall_at_k,
+    compute_map_at_k,
     compute_average_metrics,
     plot_recall_curve,
     plot_aggregate_recall_curves,
     pad_image_to_square,
     add_border_to_image,
     create_summary_table,
+    find_query_image,
+    FAISS_AVAILABLE,
 )
 
 
@@ -116,12 +104,13 @@ def embed_query_image(model, preprocess, device: str, query_image_path: Path, us
 
 def evaluate_single_query(
     query_folder: Path,
-    index: faiss.Index,
+    index: Any,  # faiss.Index
     id_to_meta: Dict[int, Dict],
     model,
     preprocess,
     device: str,
-    k_values: List[int] = [1, 5, 10, 20],
+    k_values: List[int] = [5, 10, 20, 30, 40, 50],
+    map_k_values: List[int] = [5, 10, 20, 30, 40, 50],
     use_padding: bool = False
 ) -> Dict:
     """
@@ -135,17 +124,13 @@ def evaluate_single_query(
         preprocess: Preprocessing function
         device: Device to use
         k_values: List of k values for recall@k
+        use_padding: Whether to pad images to square
     
     Returns:
         Dictionary with evaluation results
     """
-    # Find query image
-    query_image = None
-    for ext in ['.png', '.jpg', '.jpeg', '.webp']:
-        candidate = query_folder / f"query{ext}"
-        if candidate.exists():
-            query_image = candidate
-            break
+    # Find query image using utility function
+    query_image = find_query_image(query_folder)
     
     if query_image is None:
         return {
@@ -202,6 +187,12 @@ def evaluate_single_query(
         metric_name = f"recall@{k}"
         recall_metrics[metric_name] = compute_recall_at_k(search_results, ground_truth, k, include_page_key=False, include_source_file=False)
     
+    # Compute mAP@k for each k value
+    map_metrics = {}
+    for k in map_k_values:
+        metric_name = f"map@{k}"
+        map_metrics[metric_name] = compute_map_at_k(search_results, ground_truth, k, include_page_key=False, include_source_file=False)
+    
     # Get all relevant retrieved results
     all_relevant = []
     for result in search_results:
@@ -215,6 +206,7 @@ def evaluate_single_query(
         "total_retrieved": len(search_results),
         "relevant_retrieved": len(all_relevant),
         "recall_metrics": recall_metrics,
+        "map_metrics": map_metrics,
         "all_retrieved": search_results,
         "relevant_results": all_relevant
     }
@@ -372,8 +364,15 @@ Examples:
         "--k-values",
         type=int,
         nargs='+',
-        default=[1, 5, 10, 20],
-        help="K values for recall@k evaluation (default: 1 5 10 20)",
+        default=[5, 10, 20, 30, 40, 50],
+        help="K values for recall@k evaluation (default: 5 10 20 30 40 50)",
+    )
+    parser.add_argument(
+        "--map-k-values",
+        type=int,
+        nargs='+',
+        default=[5, 10, 20, 30, 40, 50],
+        help="K values for mAP@k evaluation (default: 5 10 20 30 40 50)",
     )
     parser.add_argument(
         "--device",
@@ -442,6 +441,7 @@ Examples:
     
     print(f"\nFound {len(query_folders)} query folders")
     print(f"Evaluating recall@k with k values: {args.k_values}")
+    print(f"Evaluating mAP@k with k values: {args.map_k_values}")
     print("="*60)
     
     # Evaluate each query with timing
@@ -457,6 +457,7 @@ Examples:
             preprocess=preprocess,
             device=device,
             k_values=args.k_values,
+            map_k_values=args.map_k_values,
             use_padding=args.use_padding
         )
         query_time = time.time() - start_time
@@ -484,6 +485,7 @@ Examples:
             "index_dir": str(index_dir),
             "queries_dir": str(queries_dir),
             "k_values": args.k_values,
+            "map_k_values": args.map_k_values,
             "num_queries": len(query_folders),
             "model": args.model,
             "pretrained": args.pretrained,
@@ -567,9 +569,21 @@ Examples:
         print(f"{'Metric':<15} {'Mean':<10} {'Std':<10} {'Min':<10} {'Max':<10} {'Median':<10}")
         print("-" * 70)
         
+        # Print recall metrics
         for metric_name, stats in sorted(averages['average_metrics'].items()):
-            print(f"{metric_name:<15} {stats['mean']:<10.4f} {stats['std']:<10.4f} "
-                  f"{stats['min']:<10.4f} {stats['max']:<10.4f} {stats['median']:<10.4f}")
+            if metric_name.startswith('recall@'):
+                print(f"{metric_name:<15} {stats['mean']:<10.4f} {stats['std']:<10.4f} "
+                      f"{stats['min']:<10.4f} {stats['max']:<10.4f} {stats['median']:<10.4f}")
+        
+        # Print mAP metrics
+        print("\nAverage mAP@K Metrics:")
+        print(f"{'Metric':<15} {'Mean':<10} {'Std':<10} {'Min':<10} {'Max':<10} {'Median':<10}")
+        print("-" * 70)
+        
+        for metric_name, stats in sorted(averages['average_metrics'].items()):
+            if metric_name.startswith('map@'):
+                print(f"{metric_name:<15} {stats['mean']:<10.4f} {stats['std']:<10.4f} "
+                      f"{stats['min']:<10.4f} {stats['max']:<10.4f} {stats['median']:<10.4f}")
         
         print("\nOverall Statistics:")
         overall = averages['overall_stats']

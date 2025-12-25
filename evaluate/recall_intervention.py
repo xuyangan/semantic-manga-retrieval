@@ -5,8 +5,11 @@ Recall Evaluation Script for Intervention Queries
 Evaluates recall@k for intervention queries using the gated search pipeline.
 Processes query folders with query images, text queries, and labels.txt files.
 
-Sample Execution:
-    python evaluate/recall_intervention.py --queries a_queries/text --beta 1.0 --gamma 1.0 --image-embedding b_datasets/final_dataset_embeddings --text-embedding b_datasets/final_dataset_text_embeddings --image-index a_indexes/image --text-index a_indexes/text --output a_results/intervention
+Usage:
+    python -m evaluate.recall_intervention --queries a_queries/text --beta 1.0 --gamma 1.0 \\
+        --image-embedding b_datasets/final_dataset_embeddings \\
+        --text-embedding b_datasets/final_dataset_text_embeddings \\
+        --image-index a_indexes/image --text-index a_indexes/text --output a_results/intervention
 """
 
 import os
@@ -14,10 +17,9 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
-from typing import List, Dict, Set, Tuple, Optional
+from typing import List, Dict, Optional
 import numpy as np
 from tqdm import tqdm
 from datetime import datetime
@@ -26,97 +28,38 @@ from PIL import Image
 import torch
 import open_clip
 
-try:
-    import faiss
-    FAISS_AVAILABLE = True
-except ImportError:
-    FAISS_AVAILABLE = False
-    print("Warning: faiss not installed. Install with: pip install faiss-cpu or faiss-gpu")
-
-import sys
-from pathlib import Path
-
-# Add project root to path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
-# Import utility functions
+# Import utility functions (handles sys.path setup)
 from evaluate.recall_utils import (
     get_device,
+    check_faiss_available,
+    load_faiss_index_direct,
     load_ground_truth_labels,
-    normalize_path_for_matching,
-    extract_manga_chapter_page,
     match_result_to_ground_truth,
     compute_recall_at_k,
+    compute_map_at_k,
     compute_average_metrics,
     plot_recall_curve,
     plot_aggregate_recall_curves,
-    pad_image_to_square,
     add_border_to_image,
     create_summary_table,
     load_text_query,
+    load_llm_description,
+    save_llm_description,
+    find_query_image,
+    find_image_path_from_result,
+    FAISS_AVAILABLE,
 )
 
 # Import intervention modules
-sys.path.insert(0, str(Path(__file__).parent.parent))
 from intervention.gate import compute_gate_for_candidates
 from intervention.transform import build_intervention_index, build_page_to_faiss_mapping
 from late_fusion.clip_encoder import load_clip_model, encode_image, encode_text
 from late_fusion.faiss_search import (
-    load_faiss_index,
     search_index,
     deduplicate_text_candidates,
     get_page_key,
 )
 from late_fusion.llm_encoder import encode_query_llm
-
-
-def load_llm_description(query_folder: Path) -> Optional[str]:
-    """
-    Load LLM description from query folder if it exists.
-    
-    Args:
-        query_folder: Path to query folder
-    
-    Returns:
-        LLM description string if file exists, None otherwise
-    """
-    llm_file = query_folder / "llm_description.txt"
-    if llm_file.exists():
-        return llm_file.read_text(encoding="utf-8").strip()
-    return None
-
-
-def load_faiss_index_direct(index_dir: Path):
-    """
-    Load FAISS index directly from index directory (not from subfolder).
-    
-    Args:
-        index_dir: Path to index directory containing faiss.index and metadata.json
-    
-    Returns:
-        tuple: (faiss_index, id_to_meta dict, dimension)
-    """
-    import faiss
-    
-    index_path = index_dir / "faiss.index"
-    if not index_path.exists():
-        raise FileNotFoundError(f"FAISS index not found: {index_path}")
-    
-    index = faiss.read_index(str(index_path))
-    
-    metadata_path = index_dir / "metadata.json"
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
-    
-    with open(metadata_path) as f:
-        data = json.load(f)
-    
-    id_to_meta = {int(k): v for k, v in data["metadata"].items()}
-    dimension = data.get("dimension", index.d)
-    
-    return index, id_to_meta, dimension
 
 
 def intervention_search_with_cached_description(
@@ -131,6 +74,14 @@ def intervention_search_with_cached_description(
     gamma: float,
     beta: float,
     cached_description: Optional[str] = None,
+    model=None,
+    preprocess=None,
+    tokenizer=None,
+    device: Optional[str] = None,
+    text_index=None,
+    text_id_to_meta=None,
+    image_index=None,
+    image_id_to_meta=None,
     verbose: bool = False
 ) -> dict:
     """
@@ -177,10 +128,13 @@ def intervention_search_with_cached_description(
         if verbose:
             print(f"  Description: {description[:80]}...")
     
-    # Step 2: Load CLIP model
-    if verbose:
-        print("\n[2/8] Loading CLIP model and generating embeddings...")
-    model, preprocess, tokenizer, device = load_clip_model()
+    # Step 2: Load CLIP model (only if not provided)
+    if model is None or preprocess is None or tokenizer is None:
+        if verbose:
+            print("\n[2/8] Loading CLIP model and generating embeddings...")
+        model, preprocess, tokenizer, device = load_clip_model(device)
+    elif verbose:
+        print("\n[2/8] Using provided CLIP model for generating embeddings...")
     
     query_image_embedding = encode_image(model, preprocess, device, image_path)
     query_text_embedding = encode_text(model, tokenizer, device, description)
@@ -188,16 +142,20 @@ def intervention_search_with_cached_description(
         print(f"  Query image embedding: {query_image_embedding.shape}")
         print(f"  Query text embedding: {query_text_embedding.shape}")
     
-    # Step 3: Load FAISS indexes directly from index directories
-    if verbose:
-        print("\n[3/8] Loading FAISS indexes...")
-    text_index, text_id_to_meta, _ = load_faiss_index_direct(text_index_dir)
-    if verbose:
-        print(f"  Text index: {text_index.ntotal} vectors")
+    # Step 3: Load FAISS indexes (only if not provided - allows reuse across queries)
+    if text_index is None or text_id_to_meta is None:
+        if verbose:
+            print("\n[3/8] Loading FAISS indexes...")
+        text_index, text_id_to_meta, _ = load_faiss_index_direct(text_index_dir)
+        if verbose:
+            print(f"  Text index: {text_index.ntotal} vectors")
+    elif verbose:
+        print("\n[3/8] Using provided FAISS indexes...")
     
-    image_index, image_id_to_meta, _ = load_faiss_index_direct(image_index_dir)
-    if verbose:
-        print(f"  Image index: {image_index.ntotal} vectors")
+    if image_index is None or image_id_to_meta is None:
+        image_index, image_id_to_meta, _ = load_faiss_index_direct(image_index_dir)
+        if verbose:
+            print(f"  Image index: {image_index.ntotal} vectors")
     
     # Step 4: Search text DB
     if verbose:
@@ -314,6 +272,15 @@ def evaluate_single_query(
     beta: float,
     m: int,
     k_values: List[int],
+    map_k_values: List[int] = [10, 20, 30, 50],
+    model=None,
+    preprocess=None,
+    tokenizer=None,
+    device: Optional[str] = None,
+    text_index=None,
+    text_id_to_meta=None,
+    image_index=None,
+    image_id_to_meta=None,
     verbose: bool = False
 ) -> Dict:
     """
@@ -334,13 +301,8 @@ def evaluate_single_query(
     Returns:
         Dictionary with evaluation results
     """
-    # Find query image
-    query_image = None
-    for ext in ['.png', '.jpg', '.jpeg', '.webp']:
-        candidate = query_folder / f"query{ext}"
-        if candidate.exists():
-            query_image = candidate
-            break
+    # Find query image using utility function
+    query_image = find_query_image(query_folder)
     
     if query_image is None:
         return {
@@ -354,8 +316,18 @@ def evaluate_single_query(
         # Use empty string if no text query found
         user_query = ""
     
-    # Check for cached LLM description
+    # Load cached LLM description or generate and save it
     cached_description = load_llm_description(query_folder)
+    if cached_description is None:
+        # Generate LLM description if not cached
+        try:
+            cached_description = encode_query_llm(query_image, user_query, verbose=False)
+            # Save the generated description for future reuse
+            save_llm_description(query_folder, cached_description)
+        except Exception as e:
+            if verbose:
+                print(f"Warning: Could not generate LLM description: {e}")
+            cached_description = user_query if user_query else "manga image"
     
     # Load ground truth
     labels_file = query_folder / "labels.txt"
@@ -386,6 +358,14 @@ def evaluate_single_query(
             gamma=gamma,
             beta=beta,
             cached_description=cached_description,
+            model=model,
+            preprocess=preprocess,
+            tokenizer=tokenizer,
+            device=device,
+            text_index=text_index,
+            text_id_to_meta=text_id_to_meta,
+            image_index=image_index,
+            image_id_to_meta=image_id_to_meta,
             verbose=verbose
         )
         
@@ -414,6 +394,12 @@ def evaluate_single_query(
     for k in k_values:
         metric_name = f"recall@{k}"
         recall_metrics[metric_name] = compute_recall_at_k(search_results, ground_truth, k, include_page_key=True, include_source_file=False)
+    
+    # Compute mAP@k for each k value
+    map_metrics = {}
+    for k in map_k_values:
+        metric_name = f"map@{k}"
+        map_metrics[metric_name] = compute_map_at_k(search_results, ground_truth, k, include_page_key=True, include_source_file=False)
     
     # Get all relevant retrieved results
     all_relevant = []
@@ -449,58 +435,12 @@ def evaluate_single_query(
         "total_retrieved": len(search_results),
         "relevant_retrieved": len(all_relevant),
         "recall_metrics": recall_metrics,
+        "map_metrics": map_metrics,
         "all_retrieved": search_results,
         "relevant_results": all_relevant,
         "gating_stats": gating_stats,
         "num_intervened_candidates": result.get('num_intervened', 0),
     }
-
-
-def find_image_path_from_result(result: Dict, image_dir: Path = None) -> Optional[Path]:
-    """
-    Find image path from intervention result metadata.
-    
-    Args:
-        result: Intervention result dictionary
-        image_dir: Optional base directory for images
-    
-    Returns:
-        Path to image if found, None otherwise
-    """
-    # Try different ways to get the path
-    paths_to_try = []
-    
-    # Method 1: Direct path field
-    if "path" in result and result["path"]:
-        paths_to_try.append(Path(result["path"]))
-    
-    # Method 2: From metadata
-    if "manga" in result and "chapter" in result and "page" in result:
-        manga = result["manga"]
-        chapter = result["chapter"]
-        page = result["page"]
-        # Remove extension from page if present
-        page_base = page.rsplit('.', 1)[0] if '.' in page else page
-        
-        if image_dir:
-            for ext in ['.png', '.jpg', '.jpeg', '.webp']:
-                candidate = image_dir / manga / chapter / f"{page_base}{ext}"
-                if candidate.exists():
-                    paths_to_try.append(candidate)
-        else:
-            # Try common locations
-            for base in ["final_dataset", "b_datasets/final_dataset"]:
-                for ext in ['.png', '.jpg', '.jpeg', '.webp']:
-                    candidate = Path(base) / manga / chapter / f"{page_base}{ext}"
-                    if candidate.exists():
-                        paths_to_try.append(candidate)
-    
-    # Try each path
-    for path in paths_to_try:
-        if path.exists():
-            return path
-    
-    return None
 
 
 def visualize_query_results(
@@ -688,8 +628,15 @@ Examples:
         "--k-values",
         type=int,
         nargs='+',
-        default=[1, 5, 10, 20],
-        help="K values for recall@k evaluation (default: 1 5 10 20)",
+        default=[10, 20, 30, 50],
+        help="K values for recall@k evaluation (default: 10 20 30 50)",
+    )
+    parser.add_argument(
+        "--map-k-values",
+        type=int,
+        nargs='+',
+        default=[10, 20, 30, 50],
+        help="K values for mAP@k evaluation (default: 10 20 30 50)",
     )
     parser.add_argument(
         "--m",
@@ -788,7 +735,54 @@ Examples:
     print(f"Output directory: {output_dir}")
     print(f"Found {len(query_folders)} query folders")
     print(f"Evaluating recall@k with k values: {args.k_values}")
+    print(f"Evaluating mAP@k with k values: {args.map_k_values}")
     print("="*60)
+    
+    # Load CLIP model once before the loop (prevents segfault on macOS)
+    print("\nLoading CLIP model (will be reused for all queries)...")
+    device = args.device if args.device else get_device()
+    
+    try:
+        print(f"Attempting to load CLIP model on {device}...")
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            "ViT-L-14",
+            pretrained="laion2b_s32b_b82k",
+        )
+        model = model.to(device).eval()
+        tokenizer = open_clip.get_tokenizer("ViT-L-14")
+        
+        # Test the model with a dummy operation
+        with torch.no_grad():
+            dummy_tensor = torch.zeros(1, 3, 224, 224).to(device)
+            _ = model.encode_image(dummy_tensor)
+        
+        print(f"CLIP model loaded successfully on {device}")
+    except Exception as e:
+        print(f"Error loading CLIP model on {device}: {e}")
+        if device != "cpu":
+            print("Falling back to CPU...")
+            device = "cpu"
+            try:
+                model, _, preprocess = open_clip.create_model_and_transforms(
+                    "ViT-L-14",
+                    pretrained="laion2b_s32b_b82k",
+                )
+                model = model.to(device).eval()
+                tokenizer = open_clip.get_tokenizer("ViT-L-14")
+                print(f"CLIP model loaded on {device} (fallback)")
+            except Exception as e2:
+                print(f"Fatal error: Could not load CLIP model even on CPU: {e2}")
+                return
+        else:
+            print(f"Fatal error: Could not load CLIP model: {e}")
+            return
+    
+    # Load FAISS indexes once (reused for all queries - major performance improvement)
+    print("\nLoading FAISS indexes (will be reused for all queries)...")
+    image_index, image_id_to_meta, _ = load_faiss_index_direct(image_index_dir)
+    text_index, text_id_to_meta, _ = load_faiss_index_direct(text_index_dir)
+    print(f"Image index: {image_index.ntotal} vectors")
+    print(f"Text index: {text_index.ntotal} vectors")
     
     # Evaluate each query with timing
     all_results = []
@@ -805,6 +799,15 @@ Examples:
             beta=args.beta,
             m=args.m,
             k_values=args.k_values,
+            map_k_values=args.map_k_values,
+            model=model,
+            preprocess=preprocess,
+            tokenizer=tokenizer,
+            device=device,
+            text_index=text_index,
+            text_id_to_meta=text_id_to_meta,
+            image_index=image_index,
+            image_id_to_meta=image_id_to_meta,
             verbose=args.verbose
         )
         query_time = time.time() - start_time
@@ -862,6 +865,7 @@ Examples:
             "gamma": args.gamma,
             "m": args.m,
             "k_values": args.k_values,
+            "map_k_values": args.map_k_values,
             "num_queries": len(query_folders),
         },
         "individual_results": all_results,
@@ -945,9 +949,21 @@ Examples:
         print(f"{'Metric':<15} {'Mean':<10} {'Std':<10} {'Min':<10} {'Max':<10} {'Median':<10}")
         print("-" * 70)
         
+        # Print recall metrics
         for metric_name, stats in sorted(averages['average_metrics'].items()):
-            print(f"{metric_name:<15} {stats['mean']:<10.4f} {stats['std']:<10.4f} "
-                  f"{stats['min']:<10.4f} {stats['max']:<10.4f} {stats['median']:<10.4f}")
+            if metric_name.startswith('recall@'):
+                print(f"{metric_name:<15} {stats['mean']:<10.4f} {stats['std']:<10.4f} "
+                      f"{stats['min']:<10.4f} {stats['max']:<10.4f} {stats['median']:<10.4f}")
+        
+        # Print mAP metrics
+        print("\nAverage mAP@K Metrics:")
+        print(f"{'Metric':<15} {'Mean':<10} {'Std':<10} {'Min':<10} {'Max':<10} {'Median':<10}")
+        print("-" * 70)
+        
+        for metric_name, stats in sorted(averages['average_metrics'].items()):
+            if metric_name.startswith('map@'):
+                print(f"{metric_name:<15} {stats['mean']:<10.4f} {stats['std']:<10.4f} "
+                      f"{stats['min']:<10.4f} {stats['max']:<10.4f} {stats['median']:<10.4f}")
         
         print("\nOverall Statistics:")
         overall = averages['overall_stats']

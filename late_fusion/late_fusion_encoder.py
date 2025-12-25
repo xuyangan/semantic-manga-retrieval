@@ -7,7 +7,7 @@ with CLIP embeddings to search and rerank results.
 
 Usage:
     # Basic: Generate description only
-    python late_fusion/late_fusion_encoder.py --image query.jpg --text "the character on the left"
+    python late_fusion/late_fusion_encoder.py --image query.jpg --text "the character at the left"
     
     # Late Fusion: Full pipeline with reranking
     python late_fusion/late_fusion_encoder.py --image query.jpg --text "the tall warrior" \\
@@ -347,7 +347,7 @@ def main():
         epilog="""
 Examples:
     # Basic: Generate description only
-    python -m late_fusion.late_fusion_encoder --image page.jpg --text "the character on the left"
+    python -m late_fusion.late_fusion_encoder --image page.jpg --text "the character at the left"
     
     # Late Fusion One: Image-first, rerank with text
     python -m late_fusion.late_fusion_encoder --image page.jpg --text "the tall warrior" \\

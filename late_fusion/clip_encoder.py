@@ -7,11 +7,13 @@ Generates CLIP embeddings for images and text.
 
 from pathlib import Path
 import numpy as np
+import torch
+from PIL import Image
+import open_clip
 
 
 def get_device() -> str:
     """Get best available device."""
-    import torch
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -25,9 +27,6 @@ def load_clip_model(device: str = None):
     Returns:
         tuple: (model, preprocess, tokenizer, device)
     """
-    import torch
-    import open_clip
-    
     if device is None:
         device = get_device()
     
@@ -55,9 +54,6 @@ def encode_image(model, preprocess, device: str, image_path: Path) -> np.ndarray
     Returns:
         Normalized embedding array (1, 768)
     """
-    import torch
-    from PIL import Image
-    
     img = Image.open(image_path).convert("RGB")
     img_tensor = preprocess(img).unsqueeze(0).to(device)
     
@@ -81,8 +77,6 @@ def encode_text(model, tokenizer, device: str, text: str) -> np.ndarray:
     Returns:
         Normalized embedding array (1, 768)
     """
-    import torch
-    
     tokens = tokenizer([text]).to(device)
     
     with torch.no_grad():
