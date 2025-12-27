@@ -6,29 +6,20 @@ Evaluates recall@k for late fusion queries (image-first or text-first).
 Supports grid search over multiple alpha and m values for hyperparameter exploration.
 
 Usage:
-    # Single alpha and m (backward compatible)
-    python -m evaluate.recall_fusion --queries queries --mode image --alpha 0.5 --m 50 \
-        --image-embedding final_dataset_embeddings \
-        --text-embedding final_dataset_text_embeddings \
-        --image-index final_dataset_embeddings/faiss_index \
-        --text-index final_dataset_text_embeddings/faiss_index \
+    # Single alpha and m
+    python -m evaluate.recall_fusion --queries queries --mode image --alpha 0.5 --m 50 \\
+        --image-index indexes/image --text-index indexes/text \\
         --output results/fusion_single
 
-    # Grid search over multiple alpha and m values (default)
-    python -m evaluate.recall_fusion --queries queries --mode image \
-        --alphas 0.1 0.2 0.3 0.4 0.5 --m-values 50 60 70 \
-        --image-embedding final_dataset_embeddings \
-        --text-embedding final_dataset_text_embeddings \
-        --image-index final_dataset_embeddings/faiss_index \
-        --text-index final_dataset_text_embeddings/faiss_index \
+    # Grid search over multiple alpha and m values
+    python -m evaluate.recall_fusion --queries queries --mode image \\
+        --alphas 0.1 0.2 0.3 0.4 0.5 --m-values 50 60 70 \\
+        --image-index indexes/image --text-index indexes/text \\
         --output results/fusion_grid_search
         
     # Use defaults (alpha=0.1-0.5, m=50,60,70)
-    python -m evaluate.recall_fusion --queries queries --mode image \
-        --image-embedding final_dataset_embeddings \
-        --text-embedding final_dataset_text_embeddings \
-        --image-index final_dataset_embeddings/faiss_index \
-        --text-index final_dataset_text_embeddings/faiss_index \
+    python -m evaluate.recall_fusion --queries queries --mode image \\
+        --image-index indexes/image --text-index indexes/text \\
         --output results/fusion_grid_search_image_first
 """
 
@@ -78,8 +69,6 @@ from late_fusion.llm_encoder import encode_query_llm
 def late_fusion_one_with_cached_description(
     image_path: Path,
     user_query: str,
-    image_db: Path,
-    text_db: Path,
     image_index_dir: Path,
     text_index_dir: Path,
     m: int,
@@ -100,7 +89,7 @@ def late_fusion_one_with_cached_description(
     verbose: bool = False
 ) -> dict:
     """
-    Wrapper for late_fusion_one that uses cached LLM description and separate index directories.
+    Image-first late fusion search with cached LLM description.
     Supports pre-computed embeddings for efficiency in grid search.
     """
     from late_fusion.clip_encoder import load_clip_model, encode_image, encode_text
@@ -214,8 +203,6 @@ def late_fusion_one_with_cached_description(
 def late_fusion_two_with_cached_description(
     image_path: Path,
     user_query: str,
-    image_db: Path,
-    text_db: Path,
     image_index_dir: Path,
     text_index_dir: Path,
     m: int,
@@ -236,7 +223,7 @@ def late_fusion_two_with_cached_description(
     verbose: bool = False
 ) -> dict:
     """
-    Wrapper for late_fusion_two that uses cached LLM description and separate index directories.
+    Text-first late fusion search with cached LLM description.
     Supports pre-computed embeddings for efficiency in grid search.
     """
     from late_fusion.clip_encoder import load_clip_model, encode_image, encode_text
@@ -358,8 +345,6 @@ def late_fusion_two_with_cached_description(
 
 def evaluate_single_query(
     query_folder: Path,
-    image_db: Path,
-    text_db: Path,
     image_index_dir: Path,
     text_index_dir: Path,
     mode: str,
@@ -387,8 +372,6 @@ def evaluate_single_query(
     
     Args:
         query_folder: Path to query folder (contains query.png, text.txt, labels.txt)
-        image_db: Path to image embeddings directory
-        text_db: Path to text embeddings directory
         image_index_dir: Path to image index directory (contains faiss.index and metadata.json)
         text_index_dir: Path to text index directory (contains faiss.index and metadata.json)
         mode: "image" for image-first, "text" for text-first
@@ -444,8 +427,6 @@ def evaluate_single_query(
             result = late_fusion_one_with_cached_description(
                 image_path=query_image,
                 user_query=user_query,
-                image_db=image_db,
-                text_db=text_db,
                 image_index_dir=image_index_dir,
                 text_index_dir=text_index_dir,
                 m=m,
@@ -470,8 +451,6 @@ def evaluate_single_query(
             result = late_fusion_two_with_cached_description(
                 image_path=query_image,
                 user_query=user_query,
-                image_db=image_db,
-                text_db=text_db,
                 image_index_dir=image_index_dir,
                 text_index_dir=text_index_dir,
                 m=m,
@@ -676,20 +655,24 @@ def main():
         epilog="""
 Examples:
   # Image-first late fusion
-  python evaluate/recall_fusion.py --queries a_queries/text --mode image --alpha 0.5 --image-embedding b_datasets/final_dataset_embeddings --text-embedding b_datasets/final_dataset_text_embeddings --image-index a_indexes/image --text-index a_indexes/text --output a_results/fusion_image
+  python -m evaluate.recall_fusion --queries queries --mode image --alpha 0.5 \\
+      --image-index indexes/image --text-index indexes/text --output results/fusion_image
   
   # Text-first late fusion
-  python evaluate/recall_fusion.py --queries a_queries/text --mode text --alpha 0.5 --image-embedding b_datasets/final_dataset_embeddings --text-embedding b_datasets/final_dataset_text_embeddings --image-index a_indexes/image --text-index a_indexes/text --output a_results/fusion_text
+  python -m evaluate.recall_fusion --queries queries --mode text --alpha 0.5 \\
+      --image-index indexes/image --text-index indexes/text --output results/fusion_text
   
-  # With custom k values
-  python evaluate/recall_fusion.py --queries a_queries/text --mode image --alpha 0.7 --image-embedding b_datasets/final_dataset_embeddings --text-embedding b_datasets/final_dataset_text_embeddings --image-index a_indexes/image --text-index a_indexes/text --output a_results/fusion_image --k-values 1 5 10 20 50
+  # Grid search over alpha and m values
+  python -m evaluate.recall_fusion --queries queries --mode image \\
+      --alphas 0.1 0.2 0.3 0.4 0.5 --m-values 50 60 70 \\
+      --image-index indexes/image --text-index indexes/text --output results/fusion_grid
         """
     )
     parser.add_argument(
         "--queries", "-q",
         type=str,
         required=True,
-        help="Path to queries directory containing query folders (e.g., a_queries/text)",
+        help="Path to queries directory containing query folders",
     )
     parser.add_argument(
         "--mode", "-m",
@@ -712,28 +695,16 @@ Examples:
         help="Multiple alpha values for grid search (e.g., 0.1 0.2 0.3 0.4 0.5)",
     )
     parser.add_argument(
-        "--image-embedding",
-        type=str,
-        required=True,
-        help="Path to image embeddings directory (e.g., b_datasets/final_dataset_embeddings)",
-    )
-    parser.add_argument(
-        "--text-embedding",
-        type=str,
-        required=True,
-        help="Path to text embeddings directory (e.g., b_datasets/final_dataset_text_embeddings)",
-    )
-    parser.add_argument(
         "--image-index",
         type=str,
         required=True,
-        help="Path to image index directory containing faiss.index and metadata.json (e.g., a_indexes/image)",
+        help="Path to image FAISS index directory (contains faiss.index and metadata.json)",
     )
     parser.add_argument(
         "--text-index",
         type=str,
         required=True,
-        help="Path to text index directory containing faiss.index and metadata.json (e.g., a_indexes/text)",
+        help="Path to text FAISS index directory (contains faiss.index and metadata.json)",
     )
     parser.add_argument(
         "--output", "-o",
@@ -823,8 +794,6 @@ Examples:
     
     # Setup paths
     queries_dir = Path(args.queries)
-    image_embedding_dir = Path(args.image_embedding)
-    text_embedding_dir = Path(args.text_embedding)
     image_index_dir = Path(args.image_index)
     text_index_dir = Path(args.text_index)
     output_dir = Path(args.output)
@@ -834,14 +803,6 @@ Examples:
     # Check if paths exist
     if not queries_dir.exists():
         print(f"Error: Queries directory not found: {queries_dir}")
-        return
-    
-    if not image_embedding_dir.exists():
-        print(f"Error: Image embeddings directory not found: {image_embedding_dir}")
-        return
-    
-    if not text_embedding_dir.exists():
-        print(f"Error: Text embeddings directory not found: {text_embedding_dir}")
         return
     
     if not image_index_dir.exists():
@@ -875,8 +836,6 @@ Examples:
     print(f"Alpha values: {alpha_values}")
     print(f"M values: {m_values}")
     print(f"Queries directory: {queries_dir}")
-    print(f"Image embeddings: {image_embedding_dir}")
-    print(f"Text embeddings: {text_embedding_dir}")
     print(f"Image index: {image_index_dir}")
     print(f"Text index: {text_index_dir}")
     print(f"Output directory: {output_dir}")
@@ -1030,8 +989,6 @@ Examples:
                 else:
                     result = evaluate_single_query(
                         query_folder=query_folder,
-                        image_db=image_embedding_dir,
-                        text_db=text_embedding_dir,
                         image_index_dir=image_index_dir,
                         text_index_dir=text_index_dir,
                         mode=args.mode,
@@ -1090,8 +1047,6 @@ Examples:
             output_data = {
                 "config": {
                     "queries_dir": str(queries_dir),
-                    "image_embedding_dir": str(image_embedding_dir),
-                    "text_embedding_dir": str(text_embedding_dir),
                     "image_index_dir": str(image_index_dir),
                     "text_index_dir": str(text_index_dir),
                     "mode": args.mode,
@@ -1331,8 +1286,6 @@ Examples:
             best_output_data = {
                 "config": {
                     "queries_dir": str(queries_dir),
-                    "image_embedding_dir": str(image_embedding_dir),
-                    "text_embedding_dir": str(text_embedding_dir),
                     "image_index_dir": str(image_index_dir),
                     "text_index_dir": str(text_index_dir),
                     "mode": args.mode,
