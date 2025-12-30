@@ -1,4 +1,4 @@
-# Manga Vectorizer
+# Character Retrieval in Manga via Semantic Query Refinement
 
 A comprehensive system for manga character retrieval using CLIP embeddings, LLM-generated descriptions, and advanced retrieval algorithms including late fusion and Query-Conditioned Feedback Retrieval (QCFR).
 
@@ -14,7 +14,7 @@ Manga Vectorizer enables semantic search for manga characters by combining:
 
 For detailed information about the methodology, experiments, and results, see the full report:
 
-📄 **[Character Retrieval in Manga via Semantic Query Refinement](report/Character%20Retrieval%20in%20Manga%20via%20Semantic%20Query%20Refinemen.pdf)**
+📄 **[Character Retrieval in Manga via Semantic Query Refinement](report/Character%20Retrieval%20in%20Manga%20via%20Semantic%20Query%20Refinement.pdf)**
 
 ## Features
 
