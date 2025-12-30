@@ -6,9 +6,9 @@ Converts manga page images to text descriptions using Claude's vision API.
 Preserves the directory structure: author/manga/chapter/page.png -> page.txt
 
 Usage:
-    python LLM-Claude/llm_setup.py datasets/large --prompt "Describe this manga page"
-    python LLM-Claude/llm_setup.py datasets/small -p prompts/describe.txt --dry-run
-    python LLM-Claude/llm_setup.py datasets/medium --resume
+    python embedding_generators/llm_claude/llm_setup.py datasets/large --prompt "Describe this manga page"
+    python embedding_generators/llm_claude/llm_setup.py datasets/small -p prompts/basic_prompt.txt
+    python embedding_generators/llm_claude/llm_setup.py datasets/medium --resume
 """
 
 import argparse

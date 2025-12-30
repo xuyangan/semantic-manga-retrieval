@@ -6,7 +6,6 @@ Visualize the embedding space of indexed manga panels using t-SNE.
 
 Usage:
     python embedding_generators/clip/tsne_visualize.py --index-dir datasets/small/faiss_index
-    python embedding_generators/clip/tsne_visualize.py --index-dir datasets/small/faiss_index --color-by author
     python embedding_generators/clip/tsne_visualize.py --index-dir datasets/small/faiss_index --with-thumbnails
 """
 
@@ -28,9 +27,9 @@ def load_embeddings_from_index(index_dir: Path) -> tuple[np.ndarray, list[dict]]
     Returns:
         tuple: (embeddings array, list of metadata dicts)
     """
-    from faiss_index import MangaFaissIndex
+    from faiss_image_index import ImageFaissIndex
     
-    index = MangaFaissIndex.load(index_dir)
+    index = ImageFaissIndex.load(index_dir)
     
     n = len(index)
     dim = index.dimension
@@ -85,30 +84,24 @@ def compute_tsne(
 def plot_tsne(
     coords: np.ndarray,
     metadata: list[dict],
-    color_by: str = "author",
     title: str = "t-SNE Visualization of Manga Embeddings",
     figsize: tuple = (14, 10),
     output_path: Path | None = None,
 ) -> None:
     """
-    Plot t-SNE visualization with color coding.
+    Plot t-SNE visualization with color coding by manga.
     
     Args:
         coords: (N, 2) t-SNE coordinates
         metadata: List of metadata dicts
-        color_by: 'author' or 'manga'
         title: Plot title
         figsize: Figure size
         output_path: Optional path to save figure
     """
     fig, ax = plt.subplots(figsize=figsize)
     
-    # Get unique categories
-    if color_by == "author":
-        categories = [m["author"] for m in metadata]
-    else:
-        categories = [m["manga"] for m in metadata]
-    
+    # Get unique manga
+    categories = [m.get("manga", "Unknown") for m in metadata]
     unique_cats = sorted(set(categories))
     n_cats = len(unique_cats)
     
@@ -141,7 +134,7 @@ def plot_tsne(
         loc='center left',
         bbox_to_anchor=(1.02, 0.5),
         fontsize=8,
-        title=color_by.capitalize(),
+        title="Manga",
     )
     
     plt.tight_layout()
@@ -177,23 +170,23 @@ def plot_tsne_with_thumbnails(
     
     fig, ax = plt.subplots(figsize=figsize)
     
-    # Get author colors for background dots
-    authors = [m["author"] for m in metadata]
-    unique_authors = sorted(set(authors))
+    # Get manga colors for background dots
+    mangas = [m.get("manga", "Unknown") for m in metadata]
+    unique_mangas = sorted(set(mangas))
     cmap = plt.colormaps.get_cmap("tab10")
-    author_colors = {a: cmap(i % 10) for i, a in enumerate(unique_authors)}
+    manga_colors = {m: cmap(i % 10) for i, m in enumerate(unique_mangas)}
     
     # Plot background points
-    for author in unique_authors:
-        mask = [a == author for a in authors]
-        author_coords = coords[mask]
+    for manga in unique_mangas:
+        mask = [m == manga for m in mangas]
+        manga_coords = coords[mask]
         ax.scatter(
-            author_coords[:, 0],
-            author_coords[:, 1],
-            c=[author_colors[author]],
+            manga_coords[:, 0],
+            manga_coords[:, 1],
+            c=[manga_colors[manga]],
             s=20,
             alpha=0.3,
-            label=author[:25],
+            label=manga[:25],
         )
     
     # Add thumbnails
@@ -209,7 +202,7 @@ def plot_tsne_with_thumbnails(
                 frameon=True,
                 pad=0.1,
                 bboxprops=dict(
-                    edgecolor=author_colors[meta["author"]],
+                    edgecolor=manga_colors[meta.get("manga", "Unknown")],
                     linewidth=2,
                 ),
             )
@@ -218,7 +211,7 @@ def plot_tsne_with_thumbnails(
             print(f"Error loading {meta['path']}: {e}")
     
     ax.set_title("t-SNE with Thumbnails", fontsize=14, fontweight='bold')
-    ax.legend(loc='upper left', fontsize=8, title="Author")
+    ax.legend(loc='upper left', fontsize=8, title="Manga")
     
     plt.tight_layout()
     
@@ -251,13 +244,13 @@ def plot_interactive_html(
     x_norm = (coords[:, 0] - x_min) / (x_max - x_min) * 90 + 5
     y_norm = (coords[:, 1] - y_min) / (y_max - y_min) * 90 + 5
     
-    # Generate colors by author
-    authors = sorted(set(m["author"] for m in metadata))
+    # Generate colors by manga
+    mangas = sorted(set(m.get("manga", "Unknown") for m in metadata))
     colors = [
-        f"hsl({int(i * 360 / len(authors))}, 70%, 50%)"
-        for i in range(len(authors))
+        f"hsl({int(i * 360 / len(mangas))}, 70%, 50%)"
+        for i in range(len(mangas))
     ]
-    author_colors = dict(zip(authors, colors))
+    manga_colors = dict(zip(mangas, colors))
     
     # Build HTML
     html = """<!DOCTYPE html>
@@ -321,7 +314,7 @@ def plot_interactive_html(
         {points}
     </div>
     <div class="legend">
-        <strong>Authors</strong>
+        <strong>Manga</strong>
         {legend}
     </div>
 </body>
@@ -330,19 +323,20 @@ def plot_interactive_html(
     # Generate points
     points_html = []
     for i, meta in enumerate(metadata):
-        color = author_colors[meta["author"]]
+        manga = meta.get("manga", "Unknown")
+        color = manga_colors.get(manga, "#888888")
         point = f'''
         <div class="point" style="left: {x_norm[i]:.1f}%; top: {y_norm[i]:.1f}%;">
-            <img src="file://{meta['path']}" style="border-color: {color};">
-            <div class="tooltip">{meta['author']}<br>{meta['manga']}<br>{meta['chapter']} / {meta['page']}</div>
+            <img src="file://{meta.get('path', '')}" style="border-color: {color};">
+            <div class="tooltip">{manga}<br>{meta.get('chapter', 'Unknown')} / {meta.get('page', 'Unknown')}</div>
         </div>'''
         points_html.append(point)
     
     # Generate legend
     legend_html = []
-    for author, color in author_colors.items():
+    for manga, color in manga_colors.items():
         legend_html.append(
-            f'<div class="legend-item"><div class="legend-dot" style="background: {color};"></div>{author}</div>'
+            f'<div class="legend-item"><div class="legend-dot" style="background: {color};"></div>{manga}</div>'
         )
     
     html = html.format(
@@ -363,7 +357,6 @@ def main():
         epilog="""
 Examples:
   python clip/tsne_visualize.py --index-dir datasets/small/faiss_index
-  python clip/tsne_visualize.py --index-dir datasets/small/faiss_index --color-by manga
   python clip/tsne_visualize.py --index-dir datasets/small/faiss_index --with-thumbnails
   python clip/tsne_visualize.py --index-dir datasets/small/faiss_index --html tsne.html
         """
@@ -373,13 +366,6 @@ Examples:
         type=str,
         default="datasets/small/faiss_index",
         help="Path to FAISS index directory",
-    )
-    parser.add_argument(
-        "--color-by",
-        type=str,
-        choices=["author", "manga"],
-        default="author",
-        help="Color points by author or manga (default: author)",
     )
     parser.add_argument(
         "--with-thumbnails",
@@ -438,7 +424,6 @@ Examples:
     else:
         plot_tsne(
             coords, metadata,
-            color_by=args.color_by,
             output_path=Path(args.output) if args.output else None,
         )
 
