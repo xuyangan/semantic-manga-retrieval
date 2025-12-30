@@ -1,6 +1,6 @@
 # Manga Vectorizer
 
-A comprehensive system for manga character retrieval using CLIP embeddings, LLM-generated descriptions, and advanced retrieval algorithms including late fusion and Query-Conditioned Feedback Re-ranking (QCFR).
+A comprehensive system for manga character retrieval using CLIP embeddings, LLM-generated descriptions, and advanced retrieval algorithms including late fusion and Query-Conditioned Feedback Retrieval (QCFR).
 
 ## Overview
 
@@ -143,7 +143,7 @@ python embedding_generators/clip/faiss_text_index.py \
 
 ### 4. Run Evaluation
 
-#### QCFR (Query-Conditioned Feedback Re-ranking)
+#### QCFR (Query-Conditioned Feedback Retrieval)
 
 **Single run:**
 ```bash
@@ -214,7 +214,7 @@ python -m manga_vectorizer.evaluation.recall_text \
 
 ## Retrieval Methods
 
-### 1. QCFR (Query-Conditioned Feedback Re-ranking)
+### 1. QCFR (Query-Conditioned Feedback Retrieval)
 
 **Two-pass retrieval with Rocchio-style query refinement:**
 
@@ -410,7 +410,7 @@ pip install faiss-cpu  # or faiss-gpu for CUDA
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT License
 
 ## Contributing
 
